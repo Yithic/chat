@@ -27,6 +27,13 @@ class Message(models.Model):
     sender = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     content = models.TextField(blank=True, null=True)
     media_gcs_id = models.CharField(max_length=500, blank=True, null=True)
+    reply_to = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='replies',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

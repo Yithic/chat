@@ -131,7 +131,12 @@ CHANNEL_LAYERS = {
     'default': {
         'BACKEND': 'channels_redis.core.RedisChannelLayer',
         'CONFIG': {
-            "hosts": [('127.0.0.1', 6379)], 
+            # redis-py 8 defaults socket_timeout=5s, which races with channels_redis'
+            # blocking BZPOPMIN wait and tears down idle WebSocket consumers.
+            "hosts": [{
+                "address": "redis://127.0.0.1:6379/0",
+                "socket_timeout": None,
+            }],
         },
     },
 }

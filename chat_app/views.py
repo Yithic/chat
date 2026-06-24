@@ -40,30 +40,59 @@ class UserSearchView(APIView):
             return Response([], status=status.HTTP_200_OK)
         
         users = User.objects.filter(username__icontains=query).exclude(id=request.user.id)[:10]
-        user_data = [{"id": u.id, "username": u.username} for u in users]
+        user_data = [
+            {"id": u.id, "username": u.username, "is_online": u.is_online}
+            for u in users
+        ]
         return Response(user_data, status=status.HTTP_200_OK)
 
 
 class CreateRoomView(APIView):
-    
+    # Add permission class to match your other views
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         target_user_id = request.data.get('user_id')
         if not target_user_id:
             return Response({"detail": "User ID is required."}, status=status.HTTP_400_BAD_REQUEST)
-
+        
+        # Safely get the target user using your imported User model
         try:
             target_user = User.objects.get(id=target_user_id)
         except User.DoesNotExist:
             return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+            
+        current_user = request.user
 
-        room = Room.objects.create(name=f"Chat with {target_user.username}", is_group=False)
+        # Prevents DMing yourself
+        if current_user == target_user:
+            return Response({"detail": "You cannot start a DM with yourself."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 🔍 THE FIX: Check if a DM room already exists using the RoomMember reverse relation
+        existing_rooms = Room.objects.filter(is_group=False).filter(
+            members__user=current_user
+        ).filter(
+            members__user=target_user
+        ).distinct()
+
+        existing_dm = existing_rooms.first()
+
+        if existing_dm:
+            # 🎉 Found it! Return the existing room instead of making a duplicate
+            serializer = RoomSerializer(existing_dm, context={'request': request})
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        # 🆕 If it doesn't exist, build a brand new one
+        new_room = Room.objects.create(
+            name=f"DM: {current_user.username} & {target_user.username}", 
+            is_group=False
+        )
         
-        RoomMember.objects.create(room=room, user=request.user)
-        RoomMember.objects.create(room=room, user=target_user)
-
-        serializer = RoomSerializer(room)
+        # 🔗 Use your RoomMember model to link the users instead of .add()
+        RoomMember.objects.create(room=new_room, user=current_user)
+        RoomMember.objects.create(room=new_room, user=target_user)
+        
+        serializer = RoomSerializer(new_room, context={'request': request})
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
@@ -73,7 +102,7 @@ class RoomListView(APIView):
 
     def get(self, request):
         rooms = Room.objects.filter(members__user=request.user).order_by('-created_at')
-        serializer = RoomSerializer(rooms, many=True)
+        serializer = RoomSerializer(rooms, many=True , context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
@@ -89,51 +118,73 @@ class MessageHistoryView(APIView):
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        messages = Message.objects.filter(room_id=room_id).order_by('id')[:50]
+        try:
+            limit = min(int(request.query_params.get('limit', 50)), 100)
+        except (TypeError, ValueError):
+            return Response({"detail": "Invalid limit parameter."}, status=status.HTTP_400_BAD_REQUEST)
+
+        before_id = request.query_params.get('before')
+        messages_qs = Message.objects.filter(room_id=room_id).select_related(
+            'sender', 'reply_to', 'reply_to__sender'
+        )
+
+        if before_id is not None:
+            try:
+                before_id = int(before_id)
+            except (TypeError, ValueError):
+                return Response({"detail": "Invalid before parameter."}, status=status.HTTP_400_BAD_REQUEST)
+            messages_qs = messages_qs.filter(id__lt=before_id)
+
+        messages = list(messages_qs.order_by('-id')[: limit + 1])
+        has_more = len(messages) > limit
+        if has_more:
+            messages = messages[:limit]
+        messages.reverse()
+
         serializer = MessageSerializer(messages, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response({"messages": serializer.data, "has_more": has_more}, status=status.HTTP_200_OK)
 
 
-# class GenerateGCSSignedURLView(APIView):
+class GenerateGCSSignedURLView(APIView):
     
-#     permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated]
 
-#     def post(self, request):
-#         file_name = request.data.get('file_name')
-#         content_type = request.data.get('content_type') 
+    def post(self, request):
+        file_name = request.data.get('file_name')
+        content_type = request.data.get('content_type') 
 
-#         if not file_name or not content_type:
-#             return Response(
-#                 {"detail": "Both file_name and content_type are required fields."}, 
-#                 status=status.HTTP_400_BAD_REQUEST
-#             )
+        if not file_name or not content_type:
+            return Response(
+                {"detail": "Both file_name and content_type are required fields."}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-#         try:
-#             storage_client = storage.Client()
-#             bucket_name = getattr(settings, 'GCS_BUCKET_NAME', 'your-default-bucket-name')
-#             bucket = storage_client.bucket(bucket_name)
+        try:
+            storage_client = storage.Client()
+            bucket_name = getattr(settings, 'GCS_BUCKET_NAME', 'your-default-bucket-name')
+            bucket = storage_client.bucket(bucket_name)
 
-#             timestamp = datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S')
-#             gcs_file_id = f"uploads/user_{request.user.id}/{timestamp}_{file_name}"
-#             blob = bucket.blob(gcs_file_id)
+            timestamp = datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S')
+            gcs_file_id = f"uploads/user_{request.user.id}/{timestamp}_{file_name}"
+            blob = bucket.blob(gcs_file_id)
 
-#             signed_url = blob.generate_signed_url(
-#                 version="v4",
-#                 expiration=datetime.timedelta(minutes=15),
-#                 method="PUT",
-#                 content_type=content_type,
-#             )
+            signed_url = blob.generate_signed_url(
+                version="v4",
+                expiration=datetime.timedelta(minutes=15),
+                method="PUT",
+                content_type=content_type,
+            )
 
-#             return Response({
-#                 "upload_url": signed_url,
-#                 "media_gcs_id": gcs_file_id
-#             }, status=status.HTTP_200_OK)
+            return Response({
+                "upload_url": signed_url,
+                "media_gcs_id": gcs_file_id
+            }, status=status.HTTP_200_OK)
 
-#         except Exception as e:
-#             return Response(
-#                 {"detail": f"Failed to generate signed URL: {str(e)}"}, 
-#                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
-#             )
+        except Exception as e:
+            return Response(
+                {"detail": f"Failed to generate signed URL: {str(e)}"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
         
 class CreateGroupView(APIView):
    
@@ -161,5 +212,5 @@ class CreateGroupView(APIView):
             except User.DoesNotExist:
                 continue 
 
-        serializer = RoomSerializer(room)
+        serializer = RoomSerializer(room, context={'request': request})
         return Response(serializer.data, status=status.HTTP_201_CREATED)
