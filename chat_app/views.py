@@ -94,46 +94,46 @@ class MessageHistoryView(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
-class GenerateGCSSignedURLView(APIView):
+# class GenerateGCSSignedURLView(APIView):
     
-    permission_classes = [IsAuthenticated]
+#     permission_classes = [IsAuthenticated]
 
-    def post(self, request):
-        file_name = request.data.get('file_name')
-        content_type = request.data.get('content_type') 
+#     def post(self, request):
+#         file_name = request.data.get('file_name')
+#         content_type = request.data.get('content_type') 
 
-        if not file_name or not content_type:
-            return Response(
-                {"detail": "Both file_name and content_type are required fields."}, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
+#         if not file_name or not content_type:
+#             return Response(
+#                 {"detail": "Both file_name and content_type are required fields."}, 
+#                 status=status.HTTP_400_BAD_REQUEST
+#             )
 
-        try:
-            storage_client = storage.Client()
-            bucket_name = getattr(settings, 'GCS_BUCKET_NAME', 'your-default-bucket-name')
-            bucket = storage_client.bucket(bucket_name)
+#         try:
+#             storage_client = storage.Client()
+#             bucket_name = getattr(settings, 'GCS_BUCKET_NAME', 'your-default-bucket-name')
+#             bucket = storage_client.bucket(bucket_name)
 
-            timestamp = datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S')
-            gcs_file_id = f"uploads/user_{request.user.id}/{timestamp}_{file_name}"
-            blob = bucket.blob(gcs_file_id)
+#             timestamp = datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S')
+#             gcs_file_id = f"uploads/user_{request.user.id}/{timestamp}_{file_name}"
+#             blob = bucket.blob(gcs_file_id)
 
-            signed_url = blob.generate_signed_url(
-                version="v4",
-                expiration=datetime.timedelta(minutes=15),
-                method="PUT",
-                content_type=content_type,
-            )
+#             signed_url = blob.generate_signed_url(
+#                 version="v4",
+#                 expiration=datetime.timedelta(minutes=15),
+#                 method="PUT",
+#                 content_type=content_type,
+#             )
 
-            return Response({
-                "upload_url": signed_url,
-                "media_gcs_id": gcs_file_id
-            }, status=status.HTTP_200_OK)
+#             return Response({
+#                 "upload_url": signed_url,
+#                 "media_gcs_id": gcs_file_id
+#             }, status=status.HTTP_200_OK)
 
-        except Exception as e:
-            return Response(
-                {"detail": f"Failed to generate signed URL: {str(e)}"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+#         except Exception as e:
+#             return Response(
+#                 {"detail": f"Failed to generate signed URL: {str(e)}"}, 
+#                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
+#             )
         
 class CreateGroupView(APIView):
    
