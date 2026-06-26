@@ -19,7 +19,8 @@ class MessageSerializer(serializers.ModelSerializer):
         model = Message
         fields = [
             'id', 'room', 'sender', 'sender_username', 'content',
-            'media_gcs_id', 'reply_to', 'created_at',
+            'media_gcs_id', 'media_file_name', 'media_content_type',
+            'reply_to', 'created_at',
         ]
 
     def get_reply_to(self, obj):
@@ -29,6 +30,7 @@ class MessageSerializer(serializers.ModelSerializer):
             'id': obj.reply_to_id,
             'sender_username': obj.reply_to.sender.username,
             'content': obj.reply_to.content,
+            'media_file_name': obj.reply_to.media_file_name,
         }
 
 

@@ -27,6 +27,8 @@ class Message(models.Model):
     sender = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     content = models.TextField(blank=True, null=True)
     media_gcs_id = models.CharField(max_length=500, blank=True, null=True)
+    media_file_name = models.CharField(max_length=255, blank=True, null=True)
+    media_content_type = models.CharField(max_length=100, blank=True, null=True)
     reply_to = models.ForeignKey(
         'self',
         on_delete=models.SET_NULL,
@@ -43,3 +45,9 @@ class Message(models.Model):
         ]
     def __str__(self):
         return f"Message {self.id} by User {self.sender_id} in Room {self.room_id}"
+    
+class PendingUpload(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    gcs_id = models.CharField(max_length=500, unique=True)
+    is_attached = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)

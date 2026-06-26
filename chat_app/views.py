@@ -1,14 +1,13 @@
-import datetime
-from django.conf import settings
 from django.contrib.auth import get_user_model
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated, AllowAny
-from google.cloud import storage
 
-from .models import Room, Message, RoomMember
+from .models import Room, Message, RoomMember, PendingUpload
 from .serializers import RoomSerializer, MessageSerializer
+from .gcs_utils import generate_upload_url, generate_download_url
+from .message_utils import delete_message_for_user
 
 User = get_user_model()
 
@@ -146,46 +145,99 @@ class MessageHistoryView(APIView):
 
 
 class GenerateGCSSignedURLView(APIView):
-    
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         file_name = request.data.get('file_name')
-        content_type = request.data.get('content_type') 
+        content_type = request.data.get('content_type')
 
         if not file_name or not content_type:
             return Response(
-                {"detail": "Both file_name and content_type are required fields."}, 
+                {"detail": "Both file_name and content_type are required fields."},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
         try:
-            storage_client = storage.Client()
-            bucket_name = getattr(settings, 'GCS_BUCKET_NAME', 'your-default-bucket-name')
-            bucket = storage_client.bucket(bucket_name)
-
-            timestamp = datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S')
-            gcs_file_id = f"uploads/user_{request.user.id}/{timestamp}_{file_name}"
-            blob = bucket.blob(gcs_file_id)
-
-            signed_url = blob.generate_signed_url(
-                version="v4",
-                expiration=datetime.timedelta(minutes=15),
-                method="PUT",
-                content_type=content_type,
+            upload_url, gcs_file_id = generate_upload_url(
+                request.user.id, file_name, content_type
             )
-
+            PendingUpload.objects.create(
+                user=request.user,
+                gcs_id=gcs_file_id
+            )
             return Response({
-                "upload_url": signed_url,
-                "media_gcs_id": gcs_file_id
+                "upload_url": upload_url,
+                "media_gcs_id": gcs_file_id,
             }, status=status.HTTP_200_OK)
 
         except Exception as e:
             return Response(
-                {"detail": f"Failed to generate signed URL: {str(e)}"}, 
+                {"detail": f"Failed to generate signed URL: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-        
+
+
+class GenerateGCSDownloadURLView(APIView):
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        media_gcs_id = request.query_params.get('media_gcs_id')
+        if not media_gcs_id:
+            return Response(
+                {"detail": "media_gcs_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        is_pending_owner = PendingUpload.objects.filter(
+            gcs_id=media_gcs_id,
+            user=request.user,
+            is_attached=False
+        ).exists()
+
+        is_member = Message.objects.filter(
+            media_gcs_id=media_gcs_id,
+            room__members__user=request.user,
+        ).exists()
+        if not (is_member or is_pending_owner):
+            return Response(
+                {"detail": "You do not have access to this file."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            download_url = generate_download_url(media_gcs_id)
+            return Response({"download_url": download_url}, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response(
+                {"detail": f"Failed to generate download URL: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+
+class DeleteMessageView(APIView):
+
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, room_id, message_id):
+        is_member = RoomMember.objects.filter(room_id=room_id, user=request.user).exists()
+        if not is_member:
+            return Response(
+                {"detail": "You do not have permission to access this room."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        deleted_id, error = delete_message_for_user(message_id, request.user, room_id)
+        if error == 'not_found':
+            return Response({"detail": "Message not found."}, status=status.HTTP_404_NOT_FOUND)
+        if error == 'forbidden':
+            return Response(
+                {"detail": "You can only delete your own messages."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        return Response({"id": deleted_id}, status=status.HTTP_200_OK)
+
 class CreateGroupView(APIView):
    
     permission_classes = [IsAuthenticated]
